@@ -74,6 +74,7 @@ enum {
   PARTIAL_RESULT_SIGNAL,
   FINAL_RESULT_SIGNAL,
   FULL_FINAL_RESULT_SIGNAL,
+  END_OF_AUDIO,
   LAST_SIGNAL
 };
 
@@ -415,6 +416,13 @@ static void gst_kaldinnet2onlinedecoder_class_init(
   gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL] = g_signal_new(
       "full-final-result", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
       G_STRUCT_OFFSET(Gstkaldinnet2onlinedecoderClass, full_final_result),
+      NULL,
+      NULL, kaldi_marshal_VOID__STRING, G_TYPE_NONE, 1,
+      G_TYPE_STRING);
+
+  gst_kaldinnet2onlinedecoder_signals[END_OF_AUDIO] = g_signal_new(
+      "end-of-audio", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+      G_STRUCT_OFFSET(Gstkaldinnet2onlinedecoderClass, final_result),
       NULL,
       NULL, kaldi_marshal_VOID__STRING, G_TYPE_NONE, 1,
       G_TYPE_STRING);
@@ -1359,6 +1367,9 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     }
   } else {
     GST_DEBUG_OBJECT(filter, "Less than 0.1 seconds decoded, discarding");
+  }
+  if (!more_data) {
+    g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[END_OF_AUDIO], 0, "EOA");
   }
 }
 
