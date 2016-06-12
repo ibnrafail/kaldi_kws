@@ -19,24 +19,22 @@ class CustomText(Text):
     def __init__(self, *args, **kwargs):
         Text.__init__(self, *args, **kwargs)
 
-    def highlight_pattern(self, pattern, tag, start="1.0", end="end",
+    def highlight_pattern(self, pattern, tag, length, start="1.0", end="end",
                           regexp=False):
         start = self.index(start)
         end = self.index(end)
         self.mark_set("matchStart", start)
         self.mark_set("matchEnd", start)
         self.mark_set("searchLimit", end)
-
         count = IntVar()
-        while True:
-            index = self.search(pattern, "matchEnd","searchLimit",
-                                count=count, regexp=regexp)
-            if index == "": break
-            if count.get() == 0: break
-            self.mark_set("matchStart", index)
-            self.mark_set("matchEnd", "%s+%sc" % (index, count.get()))
-            self.tag_add(tag, "matchStart", "matchEnd")
-
+        text = self.get(start, end)
+        indexes = [m.start() for m in re.finditer(pattern, text)]
+        #print(re.findall(pattern, text))
+        #print(indexes)
+        for i in indexes:
+            ind = "1.%d" % i
+            pos = '{}+{}c'.format(ind, length)
+            self.tag_add(tag, ind, pos)
 
 class Kws:
     def __init__(self, master):
@@ -65,7 +63,6 @@ class Kws:
         self.text_widget.config(yscrollcommand=scrollbar.set)
         scrollbar.config(command=self.text_widget.yview)
         fr_text_widget.grid(row=3, column=0, sticky=(N, S, E, W))
-        self.flagtext = True
         self._reset_variables()
         self._init_gst(online=True)
         self._init_gst(online=False)
@@ -91,7 +88,6 @@ class Kws:
         self.text_widget.config(state=NORMAL)
         self.text_widget.delete("1.0", END)
         self.text_widget.config(state=DISABLED)
-        self.flagtext = True
         for i in self.treeview.get_children():
             self.treeview.delete(i)
 
@@ -320,12 +316,8 @@ class Kws:
         self._display_found_timestamps(result)
 
         self.text_widget.config(state=NORMAL)
-        if self.flagtext is True:
-            self.text_widget.insert("end -1 chars", " {0} ".format(json_data["result"]["hypotheses"][0]["transcript"]))
-            self.flagtext = False
-        else:
-            self.text_widget.insert("end -1 chars", "{0} ".format(json_data["result"]["hypotheses"][0]["transcript"]))
-        self.text_widget.highlight_pattern(" {0} ".format(self.keyword), "red")
+        self.text_widget.insert(END, "{0} ".format(json_data["result"]["hypotheses"][0]["transcript"]))
+        self.text_widget.highlight_pattern(r"\b{0}\b".format(self.keyword), "red", len(self.keyword))
         self.text_widget.see(END)
         self.text_widget.config(state=DISABLED)
 
