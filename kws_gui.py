@@ -16,33 +16,11 @@ Gst.init(None)
 
 
 class CustomText(Text):
-    """
-    Magic class from Bryan Oakley
-    http://stackoverflow.com/questions/3781670/how-to-highlight-text-in-a-tkinter-text-widget
-
-    A text widget with a new method, highlight_pattern()
-
-    example:
-
-    text = CustomText()
-    text.tag_configure("red", foreground="#ff0000")
-    text.highlight_pattern("this should be red", "red")
-
-    The highlight_pattern method is a simplified python
-    version of the tcl code at http://wiki.tcl.tk/3246
-    """
     def __init__(self, *args, **kwargs):
         Text.__init__(self, *args, **kwargs)
 
     def highlight_pattern(self, pattern, tag, start="1.0", end="end",
                           regexp=False):
-        """
-        Apply the given tag to all text that matches the given pattern
-
-        If 'regexp' is set to True, pattern will be treated as a regular
-        expression according to Tcl's regular expression syntax.
-        """
-
         start = self.index(start)
         end = self.index(end)
         self.mark_set("matchStart", start)
@@ -54,7 +32,7 @@ class CustomText(Text):
             index = self.search(pattern, "matchEnd","searchLimit",
                                 count=count, regexp=regexp)
             if index == "": break
-            if count.get() == 0: break # degenerate pattern which matches zero-length strings
+            if count.get() == 0: break
             self.mark_set("matchStart", index)
             self.mark_set("matchEnd", "%s+%sc" % (index, count.get()))
             self.tag_add(tag, "matchStart", "matchEnd")
@@ -75,10 +53,22 @@ class Kws:
         self._create_lframe_kws().grid(row=0, column=0, sticky=(N, S, E, W))
         self._create_lframe_add_audio_file().grid(row=1, column=0, sticky=(N, S, E, W))
         self._create_lframe_quality().grid(row=2, column=0, sticky=(N, S, E, W))
-        self.text_widget = CustomText(master=self.master, state=DISABLED)
+
+        fr_text_widget = Frame(master=self.master)
+        scrollbar = Scrollbar(master=fr_text_widget)
+        scrollbar.pack(side=RIGHT, fill=Y)
+
+        self.text_widget = CustomText(master=fr_text_widget, state=DISABLED, height=7)
         self.text_widget.tag_configure("red", foreground="#ff0000")
-        self.text_widget.grid(row=3, column=0, sticky=(N, S, E, W))
+        self.text_widget.pack()
+
+        self.text_widget.config(yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self.text_widget.yview)
+        fr_text_widget.grid(row=3, column=0, sticky=(N, S, E, W))
+        self.flagtext = True
         self._reset_variables()
+        self._init_gst(online=True)
+        self._init_gst(online=False)
 
     # ---START: GUI methods---
     def _reset_variables(self):
@@ -101,6 +91,7 @@ class Kws:
         self.text_widget.config(state=NORMAL)
         self.text_widget.delete("1.0", END)
         self.text_widget.config(state=DISABLED)
+        self.flagtext = True
         for i in self.treeview.get_children():
             self.treeview.delete(i)
 
@@ -128,8 +119,8 @@ class Kws:
         ttk.Label(master=lfr_kws, text="Key-word/key-phrase").grid(row=0, column=0, sticky=(N, S, E, W))
         self.entry_kw = ttk.Entry(master=lfr_kws)
 
-        btn_start = ttk.Button(master=lfr_kws, text="Start", command=self._start)
-        btn_start.grid(row=2, column=0, sticky=(N, S, E, W), pady=3)
+        self.btn_start = ttk.Button(master=lfr_kws, text="Start", command=self._start)
+        self.btn_start.grid(row=2, column=0, sticky=(N, S, E, W), pady=3)
 
         btn_reset = ttk.Button(master=lfr_kws, text="Reset", command=self._reset_variables)
         btn_reset.grid(row=3, column=0, sticky=(N, S, E, W), pady=3)
@@ -152,19 +143,25 @@ class Kws:
         return lfr_kws
 
     def _start(self):
-        # Read keyword with converting it into UPPER case (current model provides recognized text in upper case)
-        self.keyword = self.entry_kw.get().upper()
-        #FIXME: add kw verification using regex
-        if not self.keyword or self.keyword.strip() == "":
-            messagebox.showerror("KWS ERROR", "Keyword is not defined")
-            return
-
-        self._reset_session_variables()
-        if self.audio_fn:
-            self._recognition_from_file()
+        if self.btn_start.cget("text") == "Start":
+            # Read keyword with converting it into UPPER case (current model provides recognized text in upper case)
+            self.keyword = self.entry_kw.get().upper()
+            #FIXME: add kw verification using regex
+            if not self.keyword or self.keyword.strip() == "":
+                messagebox.showerror("KWS ERROR", "Keyword is not defined")
+                return
+            self._reset_session_variables()
+            if self.audio_fn:
+                self.filesrc.set_property('location', self.audio_fn)
+                self.pipeline_test.set_state(Gst.State.PLAYING)
+            else:
+                self.pipeline_online.set_state(Gst.State.PLAYING)
+            self.counter_sv.set("Counter: 0")
+            self.btn_start.config(text="Stop")
         else:
-            self._recognition_online()
-        self.counter_sv.set("Counter: 0")
+            self.btn_start.config(text="Start")
+            self.pipeline_online.set_state(Gst.State.PAUSED)
+            self.pipeline_test.set_state(Gst.State.NULL)
 
     def _create_lframe_add_audio_file(self):
         lfr_audio_file = ttk.LabelFrame(master=self.master, text="Add audio")
@@ -218,86 +215,70 @@ class Kws:
         self.counter_sv.set("Counter: {0}".format(len(self.timestamps)))
     # ---END: GUI methods---
 
-    # ---START: KWS methods---
-    def _recognition_from_file(self):
-        self.decode = Gst.ElementFactory.make("decodebin", 'decode')
+    def _init_gst(self, online=False):
         def on_pad_added(_, pad):
             pad.link(self.audioconvert.get_static_pad('sink'))
-        self.decode.connect('pad-added', on_pad_added)
-        self.filesrc = Gst.ElementFactory.make('filesrc', 'filesrc')
-        self.filesrc.set_property('location', self.audio_fn)
-        self.audioconvert = Gst.ElementFactory.make("audioconvert", "audioconvert")
-        self.audioresample = Gst.ElementFactory.make("audioresample", "audioresample")
-        self.asr = Gst.ElementFactory.make("kaldinnet2onlinedecoder", "asr")
-        self.fakesink = Gst.ElementFactory.make("fakesink", "fakesink")
 
-        self.asr.set_property("fst", "HCLG.fst")
-        self.asr.set_property("model", "final.mdl")
-        self.asr.set_property("word-syms", "words.txt")
-        self.asr.set_property("phone-syms", "phones.txt")
-        self.asr.set_property("word-boundary-file", "phones/word_boundary.int")
-        self.asr.set_property("feature-type", "mfcc")
-        self.asr.set_property("mfcc-config", "conf/mfcc.conf")
-        self.asr.set_property("ivector-extraction-config", "conf/ivector_extractor.fixed.conf")
-        self.asr.set_property("max-active", 7000)
-        self.asr.set_property("beam", 10.0)
-        self.asr.set_property("lattice-beam", 6.0)
-        self.asr.set_property("do-endpointing", True)
-        self.asr.set_property("do-phone-alignment", True)
-        self.asr.set_property("num-nbest", 1)
-        self.asr.set_property("endpoint-silence-phones", "1:2:3:4:5:6:7:8:9:10")
-        self.asr.set_property("use-threaded-decoder", False)
-        self.asr.set_property("chunk-length-in-secs", 0.2)
-        self.asr.set_property("silent", False)
+        if online:
+            pulsesrc = Gst.ElementFactory.make("pulsesrc", "pulsesrc")
+            audioconvert = Gst.ElementFactory.make("audioconvert", "audioconvert")
+        else:
+            decode = Gst.ElementFactory.make("decodebin", 'decode')
+            decode.connect('pad-added', on_pad_added)
+            self.filesrc = Gst.ElementFactory.make('filesrc', 'filesrc')
+            self.audioconvert = Gst.ElementFactory.make("audioconvert", "audioconvert")
 
-        self.pipeline = Gst.Pipeline()
-        for element in [self.filesrc, self.decode, self.audioconvert, self.audioresample, self.asr, self.fakesink]:
-            self.pipeline.add(element)
+        audioresample = Gst.ElementFactory.make("audioresample", "audioresample")
+        asr = Gst.ElementFactory.make("kaldinnet2onlinedecoder", "asr")
+        fakesink = Gst.ElementFactory.make("fakesink", "fakesink")
 
-        self.filesrc.link(self.decode)
-        self.audioconvert.link(self.audioresample)
-        self.audioresample.link(self.asr)
-        self.asr.link(self.fakesink)
+        asr.set_property("fst", "HCLG.fst")
+        asr.set_property("model", "final.mdl")
+        asr.set_property("word-syms", "words.txt")
+        asr.set_property("phone-syms", "phones.txt")
+        asr.set_property("word-boundary-file", "phones/word_boundary.int")
+        asr.set_property("feature-type", "mfcc")
+        asr.set_property("mfcc-config", "conf/mfcc.conf")
+        asr.set_property("ivector-extraction-config", "conf/ivector_extractor.fixed.conf")
+        asr.set_property("max-active", 7000)
+        asr.set_property("beam", 10.0)
+        asr.set_property("lattice-beam", 6.0)
+        asr.set_property("do-endpointing", True)
+        asr.set_property("do-phone-alignment", True)
+        asr.set_property("num-nbest", 1)
+        asr.set_property("endpoint-silence-phones", "1:2:3:4:5:6:7:8:9:10")
+        asr.set_property("use-threaded-decoder", False)
+        asr.set_property("chunk-length-in-secs", 0.2)
+        asr.set_property("silent", False)
 
-        self.asr.connect('end-of-audio', self._handle_end_of_audio)
-        self.asr.connect('full-final-result', self._handle_full_final_result)
-        self.pipeline.set_state(Gst.State.PLAYING)
+        if online:
+            self.pipeline_online = Gst.Pipeline()
+            for element in [pulsesrc, audioconvert, audioresample, asr, fakesink]:
+                self.pipeline_online.add(element)
+        else:
+            self.pipeline_test = Gst.Pipeline()
+            for element in [self.filesrc, decode, self.audioconvert, audioresample, asr, fakesink]:
+                self.pipeline_test.add(element)
 
-    def _recognition_online(self):
-        self.pulsesrc = Gst.ElementFactory.make("pulsesrc", "pulsesrc")
-        self.audioconvert = Gst.ElementFactory.make("audioconvert", "audioconvert")
-        self.audioresample = Gst.ElementFactory.make("audioresample", "audioresample")
-        self.asr = Gst.ElementFactory.make("kaldinnet2onlinedecoder", "asr")
-        self.fakesink = Gst.ElementFactory.make("fakesink", "fakesink")
+        if online:
+            pulsesrc.link(audioconvert)
+            audioconvert.link(audioresample)
+        else:
+            self.filesrc.link(decode)
+            self.audioconvert.link(audioresample)
 
-        self.asr.set_property("fst", "HCLG.fst")
-        self.asr.set_property("model", "final.mdl")
-        self.asr.set_property("word-syms", "words.txt")
-        self.asr.set_property("phone-syms", "phones.txt")
-        self.asr.set_property("word-boundary-file", "phones/word_boundary.int")
-        self.asr.set_property("feature-type", "mfcc")
-        self.asr.set_property("mfcc-config", "conf/mfcc.conf")
-        self.asr.set_property("ivector-extraction-config", "conf/ivector_extractor.fixed.conf")
-        self.asr.set_property("max-active", 7000)
-        self.asr.set_property("beam", 10.0)
-        self.asr.set_property("lattice-beam", 6.0)
-        self.asr.set_property("do-endpointing", True)
-        self.asr.set_property("endpoint-silence-phones", "1:2:3:4:5:6:7:8:9:10")
-        self.asr.set_property("use-threaded-decoder", False)
-        self.asr.set_property("chunk-length-in-secs", 0.2)
-        self.asr.set_property("silent", False)
+        audioresample.link(asr)
+        asr.link(fakesink)
 
-        self.pipeline = Gst.Pipeline()
-        for element in [self.pulsesrc, self.audioconvert, self.audioresample, self.asr, self.fakesink]:
-            self.pipeline.add(element)
-        self.pulsesrc.link(self.audioconvert)
-        self.audioconvert.link(self.audioresample)
-        self.audioresample.link(self.asr)
-        self.asr.link(self.fakesink)
-        self.asr.connect('end-of-audio', self._handle_end_of_audio)
-        self.asr.connect('full-final-result', self._handle_full_final_result)
-        self.pipeline.set_state(Gst.State.PLAYING)
+        asr.connect('full-final-result', self._handle_full_final_result)
+        asr.connect('end-of-audio', self._handle_end_of_audio)
 
+        if online:
+            self.pipeline_online.set_state(Gst.State.NULL)
+        else:
+            self.pipeline_test.set_state(Gst.State.NULL)
+
+    # ---START: KWS methods---
     def _handle_full_final_result(self, _, json_str):
         keyword = self.keyword
         json_data = j_loads(json_str)
@@ -339,11 +320,18 @@ class Kws:
         self._display_found_timestamps(result)
 
         self.text_widget.config(state=NORMAL)
-        self.text_widget.insert("end -1 chars", "{0} ".format(json_data["result"]["hypotheses"][0]["transcript"]))
-        self.text_widget.highlight_pattern("{0} ".format(self.keyword), "red")
+        if self.flagtext is True:
+            self.text_widget.insert("end -1 chars", " {0} ".format(json_data["result"]["hypotheses"][0]["transcript"]))
+            self.flagtext = False
+        else:
+            self.text_widget.insert("end -1 chars", "{0} ".format(json_data["result"]["hypotheses"][0]["transcript"]))
+        self.text_widget.highlight_pattern(" {0} ".format(self.keyword), "red")
+        self.text_widget.see(END)
         self.text_widget.config(state=DISABLED)
 
     def _handle_end_of_audio(self, _, __):
+        self.pipeline_test.set_state(Gst.State.NULL)
+        self.btn_start.config(text="Start")
         if not self.audio_descr_fn:
             return
         keyword = self.keyword
@@ -397,6 +385,7 @@ class Kws:
 
         self.detection_rate_sv.set("{0} %".format(DR_str))
         self.faulty_alarm_sv.set("{0} %".format(FA_str))
+
     # ---END: KWS methods---
 
 if __name__ == "__main__":
